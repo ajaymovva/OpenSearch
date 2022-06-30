@@ -52,7 +52,6 @@ jobs:
               * **RESULT:** ${{ env.result }} :white_check_mark:
               * **URL:** ${{ env.workflow_url }}
               * **CommitID:** ${{ env.pr_from_sha }}
-              (Re-commit to this PR or restart github action to run gradle check again)
 
       - name: Create Comment Failure
         if: failure()
@@ -64,4 +63,3 @@ jobs:
               * **RESULT:** ${{ env.result }} :x:
               * **URL:** ${{ env.workflow_url }}
               * **CommitID:** ${{ env.pr_from_sha }}
-              (Re-commit to this PR or restart github action to run gradle check again)
