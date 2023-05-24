@@ -36,6 +36,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.util.Constants;
 import org.opensearch.ExceptionsHelper;
+import org.opensearch.monitor.AdmissionControllerService;
+import org.opensearch.monitor.PerfStatsMonitorService;
 import org.opensearch.common.SetOnce;
 import org.opensearch.common.settings.SettingsException;
 import org.opensearch.common.unit.ByteSizeUnit;
@@ -818,6 +820,16 @@ public class Node implements Closeable {
 
             final RestController restController = actionModule.getRestController();
 
+            final AdmissionControllerService admissionControllerService = new AdmissionControllerService(
+                settings, clusterService.getClusterSettings(),threadPool
+            );
+
+            final PerfStatsMonitorService perfStatsMonitorService = new PerfStatsMonitorService(
+                settings,
+                admissionControllerService,
+                threadPool
+            );
+
             final NetworkModule networkModule = new NetworkModule(
                 settings,
                 pluginsService.filterPlugins(NetworkPlugin.class),
@@ -1142,6 +1154,8 @@ public class Node implements Closeable {
                 b.bind(RerouteService.class).toInstance(rerouteService);
                 b.bind(ShardLimitValidator.class).toInstance(shardLimitValidator);
                 b.bind(FsHealthService.class).toInstance(fsHealthService);
+                b.bind(PerfStatsMonitorService.class).toInstance(perfStatsMonitorService);
+                b.bind(AdmissionControllerService.class).toInstance(admissionControllerService);
                 b.bind(SystemIndices.class).toInstance(systemIndices);
                 b.bind(IdentityService.class).toInstance(identityService);
                 b.bind(TracerFactory.class).toInstance(this.tracerFactory);
@@ -1253,6 +1267,7 @@ public class Node implements Closeable {
         injector.getInstance(RepositoriesService.class).start();
         injector.getInstance(SearchService.class).start();
         injector.getInstance(FsHealthService.class).start();
+        injector.getInstance(PerfStatsMonitorService.class).start();
         nodeService.getMonitorService().start();
         nodeService.getSearchBackpressureService().start();
         nodeService.getTaskCancellationMonitoringService().start();
@@ -1408,6 +1423,7 @@ public class Node implements Closeable {
         injector.getInstance(ClusterService.class).stop();
         injector.getInstance(NodeConnectionsService.class).stop();
         injector.getInstance(FsHealthService.class).stop();
+        injector.getInstance(PerfStatsMonitorService.class).stop();
         nodeService.getMonitorService().stop();
         nodeService.getSearchBackpressureService().stop();
         injector.getInstance(GatewayService.class).stop();
@@ -1478,6 +1494,8 @@ public class Node implements Closeable {
         toClose.add(() -> stopWatch.stop().start("transport"));
         toClose.add(injector.getInstance(TransportService.class));
         toClose.add(nodeService.getTaskCancellationMonitoringService());
+        toClose.add(() -> stopWatch.stop().start("perfstatsmonitor"));
+        toClose.add(injector.getInstance(PerfStatsMonitorService.class));
 
         for (LifecycleComponent plugin : pluginLifecycleComponents) {
             toClose.add(() -> stopWatch.stop().start("plugin(" + plugin.getClass().getName() + ")"));

@@ -56,6 +56,8 @@ import org.opensearch.core.common.Strings;
 import org.opensearch.index.IndexNotFoundException;
 import org.opensearch.index.IndexingPressureService;
 import org.opensearch.indices.SystemIndices;
+import org.opensearch.monitor.AdmissionControllerService;
+import org.opensearch.monitor.PerfStatsMonitorService;
 import org.opensearch.tasks.Task;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.test.VersionUtils;
@@ -278,6 +280,8 @@ public class TransportBulkActionTookTests extends OpenSearchTestCase {
                 indexNameExpressionResolver,
                 autoCreateIndex,
                 new IndexingPressureService(Settings.EMPTY, clusterService),
+                new AdmissionControllerService(Settings.EMPTY, clusterService.getClusterSettings(), threadPool),
+                new PerfStatsMonitorService(Settings.EMPTY, new AdmissionControllerService(Settings.EMPTY, clusterService.getClusterSettings(), threadPool), threadPool),
                 new SystemIndices(emptyMap()),
                 relativeTimeProvider
             );

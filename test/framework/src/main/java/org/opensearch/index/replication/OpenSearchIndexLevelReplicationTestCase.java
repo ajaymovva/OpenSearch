@@ -981,7 +981,8 @@ public abstract class OpenSearchIndexLevelReplicationTestCase extends IndexShard
                     listener.onResponse((TransportWriteAction.WritePrimaryResult<BulkShardRequest, BulkShardResponse>) result);
                 }),
                 threadPool,
-                Names.WRITE
+                Names.WRITE,
+                ""
             );
         } catch (Exception e) {
             listener.onFailure(e);

@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.util.SparseFixedBitSet;
 import org.opensearch.ExceptionsHelper;
+import org.opensearch.cluster.routing.IndexShardRoutingTable;
 import org.opensearch.core.Assertions;
 import org.opensearch.OpenSearchParseException;
 import org.opensearch.ResourceAlreadyExistsException;
@@ -71,7 +72,9 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.AtomicArray;
+
 import org.opensearch.common.lease.Releasable;
+import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
 import org.opensearch.index.Index;
 import org.opensearch.index.IndexNotFoundException;
 import org.opensearch.index.IndexingPressureService;
@@ -81,6 +84,8 @@ import org.opensearch.index.shard.ShardId;
 import org.opensearch.indices.IndexClosedException;
 import org.opensearch.indices.SystemIndices;
 import org.opensearch.ingest.IngestService;
+import org.opensearch.monitor.AdmissionControllerService;
+import org.opensearch.monitor.PerfStatsMonitorService;
 import org.opensearch.node.NodeClosedException;
 import org.opensearch.tasks.Task;
 import org.opensearch.threadpool.ThreadPool;
@@ -98,6 +103,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.function.LongSupplier;
@@ -129,6 +135,8 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
     private final IndexNameExpressionResolver indexNameExpressionResolver;
     private static final String DROPPED_ITEM_WITH_AUTO_GENERATED_ID = "auto-generated";
     private final IndexingPressureService indexingPressureService;
+    private final AdmissionControllerService admissionControllerService;
+    private final PerfStatsMonitorService perfStatsMonitorService;
     private final SystemIndices systemIndices;
 
     @Inject
@@ -143,6 +151,8 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
         IndexNameExpressionResolver indexNameExpressionResolver,
         AutoCreateIndex autoCreateIndex,
         IndexingPressureService indexingPressureService,
+        AdmissionControllerService admissionControllerService,
+        PerfStatsMonitorService perfStatsMonitorService,
         SystemIndices systemIndices
     ) {
         this(
@@ -156,6 +166,8 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
             indexNameExpressionResolver,
             autoCreateIndex,
             indexingPressureService,
+            admissionControllerService,
+            perfStatsMonitorService,
             systemIndices,
             System::nanoTime
         );
@@ -172,6 +184,8 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
         IndexNameExpressionResolver indexNameExpressionResolver,
         AutoCreateIndex autoCreateIndex,
         IndexingPressureService indexingPressureService,
+        AdmissionControllerService admissionControllerService,
+        PerfStatsMonitorService perfStatsMonitorService,
         SystemIndices systemIndices,
         LongSupplier relativeTimeProvider
     ) {
@@ -187,6 +201,8 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
         this.client = client;
         this.indexNameExpressionResolver = indexNameExpressionResolver;
         this.indexingPressureService = indexingPressureService;
+        this.admissionControllerService = admissionControllerService;
+        this.perfStatsMonitorService = perfStatsMonitorService;
         this.systemIndices = systemIndices;
         clusterService.addStateApplier(this.ingestForwarder);
     }
@@ -606,6 +622,33 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
             for (Map.Entry<ShardId, List<BulkItemRequest>> entry : requestsByShard.entrySet()) {
                 final ShardId shardId = entry.getKey();
                 final List<BulkItemRequest> requests = entry.getValue();
+                final IndexShardRoutingTable indexShard = clusterState.getRoutingTable().shardRoutingTable(shardId);
+                AtomicBoolean requestRejected = new AtomicBoolean(false);
+                indexShard.getShards().forEach(shardRouting -> {
+                    if (admissionControllerService.evaluateToEnforceAdmissionController(shardRouting.currentNodeId())) {
+                        for (BulkItemRequest request : requests) {
+                            final String indexName = concreteIndices.getConcreteIndex(request.index()).getName();
+                            DocWriteRequest<?> docWriteRequest = request.request();
+                            responses.set(
+                                request.id(),
+                                new BulkItemResponse(
+                                    request.id(),
+                                    docWriteRequest.opType(),
+                                    new BulkItemResponse.Failure(indexName, docWriteRequest.id(), new OpenSearchRejectedExecutionException("Indexing Request is rejected based on the High Resource Utilisation"))
+                                )
+                            );
+                            requestRejected.set(true);
+                        }
+                    }
+                });
+                if (requestRejected.get() == true){
+                    if (counter.decrementAndGet() == 0){
+                        listener.onResponse(
+                            new BulkResponse(responses.toArray(new BulkItemResponse[responses.length()]), buildTookInMillis(startTimeNanos))
+                        );
+                    }
+                    continue;
+                }
                 BulkShardRequest bulkShardRequest = new BulkShardRequest(
                     shardId,
                     bulkRequest.getRefreshPolicy(),
@@ -627,6 +670,16 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                 shardBulkAction.execute(bulkShardRequest, ActionListener.runBefore(new ActionListener<BulkShardResponse>() {
                     @Override
                     public void onResponse(BulkShardResponse bulkShardResponse) {
+                        Map<String, List<String>> responseHeaders = threadPool.getThreadContext().getResponseHeaders();
+                        responseHeaders.forEach((key, value) -> {
+                            if (key.startsWith("PERF_STATS_")){
+                                String nodeId = key.substring(11);
+                                if(value.size() > 0){
+                                    perfStatsMonitorService.setNodePerfStats(nodeId, value.get(0)); // updating perf stats
+                                }
+                                threadPool.getThreadContext().deleteResponseHeader(key);
+                            }
+                        });
                         for (BulkItemResponse bulkItemResponse : bulkShardResponse.getResponses()) {
                             // we may have no response if item failed
                             if (bulkItemResponse.getResponse() != null) {
