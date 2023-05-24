@@ -96,6 +96,7 @@ public final class NetworkModule {
 
     private static final List<NamedWriteableRegistry.Entry> namedWriteables = new ArrayList<>();
     private static final List<NamedXContentRegistry.Entry> namedXContents = new ArrayList<>();
+//    private final AdmissionControllerPlugin admissionControllerPlugin;
 
     static {
         registerAllocationCommand(

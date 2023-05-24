@@ -86,6 +86,7 @@ import org.opensearch.index.shard.ShardNotFoundException;
 import org.opensearch.index.translog.Translog;
 import org.opensearch.indices.IndicesService;
 import org.opensearch.indices.SystemIndices;
+import org.opensearch.monitor.AdmissionControllerService;
 import org.opensearch.rest.RestStatus;
 import org.opensearch.threadpool.TestThreadPool;
 import org.opensearch.threadpool.ThreadPool;
@@ -279,7 +280,8 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
                 }
             }), latch::countDown),
             threadPool,
-            Names.WRITE
+            Names.WRITE,
+            ""
         );
 
         latch.await();
@@ -941,7 +943,8 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
                 assertThat(response.getSeqNo(), equalTo(13L));
             }), latch),
             threadPool,
-            Names.WRITE
+            Names.WRITE,
+            ""
         );
         latch.await();
     }
@@ -1024,7 +1027,8 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
                 // Assert that we still need to fsync the location that was successfully written
                 assertThat(((WritePrimaryResult<BulkShardRequest, BulkShardResponse>) result).location, equalTo(resultLocation1))), latch),
                 rejectingThreadPool,
-                Names.WRITE
+                Names.WRITE,
+                ""
             );
             latch.await();
 
@@ -1074,6 +1078,7 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
             mock(IndexingPressureService.class),
             mock(SegmentReplicationPressureService.class),
             mock(RemoteRefreshSegmentPressureService.class),
+            mock(AdmissionControllerService.class),
             mock(SystemIndices.class)
         );
         action.handlePrimaryTermValidationRequest(
@@ -1105,6 +1110,7 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
             mock(IndexingPressureService.class),
             mock(SegmentReplicationPressureService.class),
             mock(RemoteRefreshSegmentPressureService.class),
+            mock(AdmissionControllerService.class),
             mock(SystemIndices.class)
         );
         action.handlePrimaryTermValidationRequest(
@@ -1136,6 +1142,7 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
             mock(IndexingPressureService.class),
             mock(SegmentReplicationPressureService.class),
             mock(RemoteRefreshSegmentPressureService.class),
+            mock(AdmissionControllerService.class),
             mock(SystemIndices.class)
         );
         action.handlePrimaryTermValidationRequest(
@@ -1178,6 +1185,7 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
             mock(IndexingPressureService.class),
             mock(SegmentReplicationPressureService.class),
             mock(RemoteRefreshSegmentPressureService.class),
+            mock(AdmissionControllerService.class),
             mock(SystemIndices.class)
         );
     }

@@ -421,6 +421,12 @@ public final class ThreadContext implements Writeable {
         return Collections.unmodifiableMap(map);
     }
 
+    public void deleteResponseHeader(final String key){
+        threadLocal.set(threadLocal.get().deleteResponse(key, v -> v, maxWarningHeaderCount, maxWarningHeaderSize));
+    }
+
+
+
     /**
      * Copies all header key, value pairs into the current context
      */
@@ -793,6 +799,23 @@ public final class ThreadContext implements Writeable {
                 putSingleHeader(entry.getKey(), entry.getValue(), newTransient);
             }
             return new ThreadContextStruct(requestHeaders, responseHeaders, newTransient, persistentHeaders, isSystemContext);
+        }
+
+        private ThreadContextStruct deleteResponse(
+            final String key,
+            final Function<String, String> uniqueValue,
+            final int maxWarningHeaderCount,
+            final long maxWarningHeaderSize
+        ) {
+            final Map<String, Set<String>> newResponseHeaders;
+            final Set<String> existingValues = responseHeaders.get(key);
+            if (existingValues != null) {
+                newResponseHeaders = new HashMap<>(responseHeaders);
+                newResponseHeaders.remove(key);
+            } else {
+                return this;
+            }
+            return new ThreadContextStruct(requestHeaders, newResponseHeaders, transientHeaders, isSystemContext, warningHeadersSize);
         }
 
         private ThreadContextStruct putTransient(String key, Object value) {

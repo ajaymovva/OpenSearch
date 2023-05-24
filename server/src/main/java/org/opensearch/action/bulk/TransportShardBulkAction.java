@@ -77,6 +77,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.common.util.concurrent.AbstractRunnable;
+import org.opensearch.core.xcontent.*;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.common.lease.Releasable;
@@ -97,6 +98,8 @@ import org.opensearch.index.shard.ShardNotFoundException;
 import org.opensearch.index.translog.Translog;
 import org.opensearch.indices.IndicesService;
 import org.opensearch.indices.SystemIndices;
+import org.opensearch.monitor.AdmissionControllerService;
+import org.opensearch.monitor.NodePerfStats;
 import org.opensearch.node.NodeClosedException;
 import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskId;
@@ -138,6 +141,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
     private final MappingUpdatedAction mappingUpdatedAction;
     private final SegmentReplicationPressureService segmentReplicationPressureService;
     private final RemoteRefreshSegmentPressureService remoteRefreshSegmentPressureService;
+    private final AdmissionControllerService admissionControllerService;
 
     /**
      * This action is used for performing primary term validation. With remote translog enabled, the translogs would
@@ -162,6 +166,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
         IndexingPressureService indexingPressureService,
         SegmentReplicationPressureService segmentReplicationPressureService,
         RemoteRefreshSegmentPressureService remoteRefreshSegmentPressureService,
+        AdmissionControllerService admissionControllerService,
         SystemIndices systemIndices
     ) {
         super(
@@ -184,9 +189,8 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
         this.mappingUpdatedAction = mappingUpdatedAction;
         this.segmentReplicationPressureService = segmentReplicationPressureService;
         this.remoteRefreshSegmentPressureService = remoteRefreshSegmentPressureService;
-
         this.transportPrimaryTermValidationAction = ACTION_NAME + "[validate_primary_term]";
-
+        this.admissionControllerService = admissionControllerService;
         transportService.registerRequestHandler(
             transportPrimaryTermValidationAction,
             executor,
@@ -428,7 +432,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
             public void onTimeout(TimeValue timeout) {
                 mappingUpdateListener.onFailure(new MapperException("timed out while waiting for a dynamic mapping update"));
             }
-        }), listener, threadPool, executor(primary));
+        }), listener, threadPool, executor(primary), clusterService.localNode().getId(), admissionControllerService);
     }
 
     @Override
@@ -453,7 +457,8 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
         Consumer<ActionListener<Void>> waitForMappingUpdate,
         ActionListener<PrimaryResult<BulkShardRequest, BulkShardResponse>> listener,
         ThreadPool threadPool,
-        String executorName
+        String executorName,
+        String nodeId
     ) {
         new ActionRunnable<PrimaryResult<BulkShardRequest, BulkShardResponse>>(listener) {
 
@@ -516,6 +521,98 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
             }
 
             private void finishRequest() {
+                ActionListener.completeWith(
+                    listener,
+                    () -> new WritePrimaryResult<>(
+                        context.getBulkShardRequest(),
+                        context.buildShardResponse(),
+                        context.getLocationToSync(),
+                        null,
+                        context.getPrimary(),
+                        logger
+                    )
+                );
+            }
+        }.run();
+    }
+
+    public void performOnPrimary(
+        BulkShardRequest request,
+        IndexShard primary,
+        UpdateHelper updateHelper,
+        LongSupplier nowInMillisSupplier,
+        MappingUpdatePerformer mappingUpdater,
+        Consumer<ActionListener<Void>> waitForMappingUpdate,
+        ActionListener<PrimaryResult<BulkShardRequest, BulkShardResponse>> listener,
+        ThreadPool threadPool,
+        String executorName,
+        String nodeId,
+        AdmissionControllerService admissionControllerService
+    ) {
+        new ActionRunnable<PrimaryResult<BulkShardRequest, BulkShardResponse>>(listener) {
+
+            private final Executor executor = threadPool.executor(executorName);
+
+            private final BulkPrimaryExecutionContext context = new BulkPrimaryExecutionContext(request, primary);
+
+            @Override
+            protected void doRun() throws Exception {
+                while (context.hasMoreOperationsToExecute()) {
+                    if (executeBulkItemRequest(
+                        context,
+                        updateHelper,
+                        nowInMillisSupplier,
+                        mappingUpdater,
+                        waitForMappingUpdate,
+                        ActionListener.wrap(v -> executor.execute(this), this::onRejection)
+                    ) == false) {
+                        // We are waiting for a mapping update on another thread, that will invoke this action again once its done
+                        // so we just break out here.
+                        return;
+                    }
+                    assert context.isInitial(); // either completed and moved to next or reset
+                }
+                // We're done, there's no more operations to execute so we resolve the wrapped listener
+                finishRequest();
+            }
+
+            @Override
+            public void onRejection(Exception e) {
+                // We must finish the outstanding request. Finishing the outstanding request can include
+                // refreshing and fsyncing. Therefore, we must force execution on the WRITE thread.
+                executor.execute(new ActionRunnable<PrimaryResult<BulkShardRequest, BulkShardResponse>>(listener) {
+
+                    @Override
+                    protected void doRun() {
+                        // Fail all operations after a bulk rejection hit an action that waited for a mapping update and finish the request
+                        while (context.hasMoreOperationsToExecute()) {
+                            context.setRequestToExecute(context.getCurrent());
+                            final DocWriteRequest<?> docWriteRequest = context.getRequestToExecute();
+                            onComplete(
+                                exceptionToResult(
+                                    e,
+                                    primary,
+                                    docWriteRequest.opType() == DocWriteRequest.OpType.DELETE,
+                                    docWriteRequest.version()
+                                ),
+                                context,
+                                null
+                            );
+                        }
+                        finishRequest();
+                    }
+
+                    @Override
+                    public boolean isForceExecution() {
+                        return true;
+                    }
+                });
+            }
+
+            private void finishRequest() {
+                NodePerfStats nodePerfStats = new NodePerfStats(admissionControllerService.getCPUEWMA(), admissionControllerService.getMemoryEWMA(), admissionControllerService.getIOEWMA());
+                String perfStats = nodePerfStats.toString();
+                threadPool.getThreadContext().addResponseHeader("PERF_STATS_" + nodeId, perfStats);
                 ActionListener.completeWith(
                     listener,
                     () -> new WritePrimaryResult<>(
@@ -806,6 +903,9 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
     protected void dispatchedShardOperationOnReplica(BulkShardRequest request, IndexShard replica, ActionListener<ReplicaResult> listener) {
         ActionListener.completeWith(listener, () -> {
             final Translog.Location location = performOnReplica(request, replica);
+            NodePerfStats nodePerfStats = new NodePerfStats(admissionControllerService.getCPUEWMA(), admissionControllerService.getMemoryEWMA(), admissionControllerService.getIOEWMA());
+            String perfStats = nodePerfStats.toString();
+            threadPool.getThreadContext().addResponseHeader("PERF_STATS_" + clusterService.localNode().getId(), perfStats);
             return new WriteReplicaResult<>(request, location, null, replica, logger);
         });
     }
