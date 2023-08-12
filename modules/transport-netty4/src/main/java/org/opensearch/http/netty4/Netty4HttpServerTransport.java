@@ -100,6 +100,12 @@ import io.netty.util.AsciiString;
 import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
 
+import org.opensearch.transport.NettySettings;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
 import static org.opensearch.http.HttpTransportSettings.SETTING_HTTP_MAX_CHUNK_SIZE;
 import static org.opensearch.http.HttpTransportSettings.SETTING_HTTP_MAX_CONTENT_LENGTH;
 import static org.opensearch.http.HttpTransportSettings.SETTING_HTTP_MAX_HEADER_SIZE;
@@ -182,6 +188,7 @@ public class Netty4HttpServerTransport extends AbstractHttpServerTransport {
 
     private volatile ServerBootstrap serverBootstrap;
     private volatile SharedGroupFactory.SharedGroup sharedGroup;
+    private List<ChannelHandler> channelHandlers;
 
     public Netty4HttpServerTransport(
         Settings settings,
@@ -221,6 +228,25 @@ public class Netty4HttpServerTransport extends AbstractHttpServerTransport {
             maxCompositeBufferComponents,
             pipeliningMaxEvents
         );
+    }
+
+    public Netty4HttpServerTransport(
+        Settings settings,
+        NetworkService networkService,
+        BigArrays bigArrays,
+        ThreadPool threadPool,
+        NamedXContentRegistry xContentRegistry,
+        Dispatcher dispatcher,
+        ClusterSettings clusterSettings,
+        SharedGroupFactory sharedGroupFactory,
+        Map<String, ChannelHandler> channelHandlers
+    ) {
+        this(settings, networkService, bigArrays, threadPool, xContentRegistry, dispatcher, clusterSettings, sharedGroupFactory);
+        this.channelHandlers = NettySettings.HANDLER_ORDERING.get(settings)
+            .stream()
+            .map(channelHandlers::get)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toList());
     }
 
     public Settings settings() {
@@ -418,7 +444,6 @@ public class Netty4HttpServerTransport extends AbstractHttpServerTransport {
                     final ChannelPipeline pipeline = ctx.pipeline();
                     pipeline.addAfter(ctx.name(), "handler", getRequestHandler());
                     pipeline.replace(this, "decoder_compress", new HttpContentDecompressor());
-
                     pipeline.addAfter("decoder_compress", "aggregator", aggregator);
                     if (handlingSettings.isCompression()) {
                         pipeline.addAfter(
@@ -430,7 +455,9 @@ public class Netty4HttpServerTransport extends AbstractHttpServerTransport {
                     pipeline.addBefore("handler", "request_creator", requestCreator);
                     pipeline.addBefore("handler", "response_creator", responseCreator);
                     pipeline.addBefore("handler", "pipelining", new Netty4HttpPipeliningHandler(logger, transport.pipeliningMaxEvents));
-
+                    transport.channelHandlers.forEach(
+                        handler -> ch.pipeline().addBefore("request_creator", handler.getClass().getSimpleName(), handler)
+                    );
                     ctx.fireChannelRead(ReferenceCountUtil.retain(msg));
                 }
             });
@@ -497,7 +524,6 @@ public class Netty4HttpServerTransport extends AbstractHttpServerTransport {
                         childChannel.pipeline()
                             .addLast("encoder_compress", new HttpContentCompressor(handlingSettings.getCompressionLevel()));
                     }
-
                     childChannel.pipeline()
                         .addLast("aggregator", aggregator)
                         .addLast("request_creator", requestCreator)

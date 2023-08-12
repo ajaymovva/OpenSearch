@@ -153,3 +153,6 @@ if (extraProjects.exists()) {
     addSubProjects('', extraProjectDir)
   }
 }
+include 'modules:throttling'
+findProject(':modules:throttling')?.name = 'throttling'
+

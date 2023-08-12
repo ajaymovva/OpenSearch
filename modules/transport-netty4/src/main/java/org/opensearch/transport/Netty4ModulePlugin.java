@@ -32,6 +32,7 @@
 
 package org.opensearch.transport;
 
+import io.netty.channel.ChannelHandler;
 import org.opensearch.Version;
 import org.opensearch.common.SetOnce;
 import org.opensearch.common.network.NetworkModule;
@@ -46,23 +47,43 @@ import org.opensearch.core.indices.breaker.CircuitBreakerService;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.http.HttpServerTransport;
 import org.opensearch.http.netty4.Netty4HttpServerTransport;
+import org.opensearch.plugins.ExtensiblePlugin;
 import org.opensearch.plugins.NetworkPlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.netty4.Netty4Transport;
 
-import java.util.Arrays;
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.Arrays;
 import java.util.Map;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.function.Supplier;
 
-public class Netty4ModulePlugin extends Plugin implements NetworkPlugin {
+public class Netty4ModulePlugin extends Plugin implements NetworkPlugin, ExtensiblePlugin {
 
     public static final String NETTY_TRANSPORT_NAME = "netty4";
     public static final String NETTY_HTTP_TRANSPORT_NAME = "netty4";
 
     private final SetOnce<SharedGroupFactory> groupFactory = new SetOnce<>();
+    private static final List<Netty4HandlerExtension> EXTENSIONS = new ArrayList<>();
+
+    @Override
+    public void loadExtensions(ExtensionLoader loader) {
+        Set<String> uniqueNames = new HashSet<>();
+        for (Netty4HandlerExtension extension : loader.loadExtensions(Netty4HandlerExtension.class)) {
+            String name = extension.getClass().getName();
+            if (uniqueNames.contains(name)) {
+                continue;
+            }
+            Netty4ModulePlugin.EXTENSIONS.add(extension);
+            uniqueNames.add(name);
+        }
+        assert 1 == Netty4ModulePlugin.EXTENSIONS.size() : "More than 1 extensions are not supported";
+    }
 
     @Override
     public List<Setting<?>> getSettings() {
@@ -124,6 +145,8 @@ public class Netty4ModulePlugin extends Plugin implements NetworkPlugin {
         HttpServerTransport.Dispatcher dispatcher,
         ClusterSettings clusterSettings
     ) {
+        Map<String, ChannelHandler> channelHandlers = new HashMap<>();
+        Netty4ModulePlugin.EXTENSIONS.forEach(extension -> channelHandlers.putAll(extension.getHandlers()));
         return Collections.singletonMap(
             NETTY_HTTP_TRANSPORT_NAME,
             () -> new Netty4HttpServerTransport(
@@ -134,7 +157,8 @@ public class Netty4ModulePlugin extends Plugin implements NetworkPlugin {
                 xContentRegistry,
                 dispatcher,
                 clusterSettings,
-                getSharedGroupFactory(settings)
+                getSharedGroupFactory(settings),
+                channelHandlers
             )
         );
     }

@@ -1,0 +1,17 @@
+apply plugin: 'opensearch.java-rest-test'
+
+opensearchplugin {
+  description 'Plugin intercepting requests and throttle based on resource consumption'
+  classname 'org.opensearch.throttling.OpenSearchThrottlingModulePlugin'
+  extendedPlugins = ['transport-netty4']
+}
+
+dependencies {
+  api project(path: ':modules:reindex')
+  implementation project(path: ':modules:transport-netty4')
+  compileOnly project(':modules:transport-netty4')
+}
+
+testClusters.all {
+  module ':modules:reindex'
+}
