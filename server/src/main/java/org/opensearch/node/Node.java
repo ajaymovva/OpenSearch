@@ -236,10 +236,11 @@ import org.opensearch.telemetry.tracing.TracerFactory;
 import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.RunnableTaskExecutionListener;
 import org.opensearch.threadpool.ThreadPool;
-import org.opensearch.transport.RemoteClusterService;
-import org.opensearch.transport.Transport;
 import org.opensearch.transport.TransportInterceptor;
 import org.opensearch.transport.TransportService;
+import org.opensearch.transport.Transport;
+import org.opensearch.transport.TransportInterceptorRegistry;
+import org.opensearch.transport.RemoteClusterService;
 import org.opensearch.usage.UsageService;
 import org.opensearch.watcher.ResourceWatcherService;
 
