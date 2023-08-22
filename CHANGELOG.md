@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - [Admission control] Add enhancements to FS stats to include read/write time, queue size and IO time ([#10541](https://github.com/opensearch-project/OpenSearch/pull/10541))
 - [Admission control] Add Resource usage collector service and resource usage tracker  ([#9890](https://github.com/opensearch-project/OpenSearch/pull/9890))
 - Change file names for remote cluster state ([#10557](https://github.com/opensearch-project/OpenSearch/pull/10557))
+- Admission Controller Module Transport Interceptor Initial Commit ([#9286](https://github.com/opensearch-project/OpenSearch/pull/9286))
 
 ### Dependencies
 - Bump `log4j-core` from 2.18.0 to 2.19.0
