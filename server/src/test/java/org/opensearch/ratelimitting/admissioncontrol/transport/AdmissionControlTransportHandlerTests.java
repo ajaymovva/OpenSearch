@@ -10,6 +10,7 @@ package org.opensearch.ratelimitting.admissioncontrol.transport;
 
 import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
 import org.opensearch.ratelimitting.admissioncontrol.AdmissionControlService;
+import org.opensearch.ratelimitting.admissioncontrol.enums.AdmissionControlActionType;
 import org.opensearch.tasks.Task;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.TransportChannel;
@@ -29,7 +30,8 @@ public class AdmissionControlTransportHandlerTests extends OpenSearchTestCase {
             action,
             handler,
             mock(AdmissionControlService.class),
-            false
+            false,
+            null
         );
         admissionControlTransportHandler.messageReceived(mock(TransportRequest.class), mock(TransportChannel.class), mock(Task.class));
         assertEquals(1, handler.count);
@@ -38,13 +40,14 @@ public class AdmissionControlTransportHandlerTests extends OpenSearchTestCase {
     public void testHandlerInvokedRejectedException() throws Exception {
         String action = "TEST";
         AdmissionControlService admissionControlService = mock(AdmissionControlService.class);
-        doThrow(new OpenSearchRejectedExecutionException()).when(admissionControlService).applyTransportAdmissionControl(action);
+        doThrow(new OpenSearchRejectedExecutionException()).when(admissionControlService).applyTransportAdmissionControl(action, AdmissionControlActionType.INDEXING);
         InterceptingRequestHandler<TransportRequest> handler = new InterceptingRequestHandler<>(action);
         admissionControlTransportHandler = new AdmissionControlTransportHandler<TransportRequest>(
             action,
             handler,
             admissionControlService,
-            false
+            false,
+            null
         );
         try {
             admissionControlTransportHandler.messageReceived(mock(TransportRequest.class), mock(TransportChannel.class), mock(Task.class));
@@ -58,13 +61,14 @@ public class AdmissionControlTransportHandlerTests extends OpenSearchTestCase {
     public void testHandlerInvokedRandomException() throws Exception {
         String action = "TEST";
         AdmissionControlService admissionControlService = mock(AdmissionControlService.class);
-        doThrow(new NullPointerException()).when(admissionControlService).applyTransportAdmissionControl(action);
+        doThrow(new NullPointerException()).when(admissionControlService).applyTransportAdmissionControl(action, AdmissionControlActionType.INDEXING);
         InterceptingRequestHandler<TransportRequest> handler = new InterceptingRequestHandler<>(action);
         admissionControlTransportHandler = new AdmissionControlTransportHandler<TransportRequest>(
             action,
             handler,
             admissionControlService,
-            false
+            false,
+            null
         );
         try {
             admissionControlTransportHandler.messageReceived(mock(TransportRequest.class), mock(TransportChannel.class), mock(Task.class));

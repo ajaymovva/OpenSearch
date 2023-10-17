@@ -823,6 +823,28 @@ public class Node implements Closeable {
                 recoverySettings
             );
 
+            final NodeResourceUsageTracker nodeResourceUsageTracker = new NodeResourceUsageTracker(
+                threadPool,
+                settings,
+                clusterService.getClusterSettings()
+            );
+            final ResourceUsageCollectorService resourceUsageCollectorService = new ResourceUsageCollectorService(
+                nodeResourceUsageTracker,
+                clusterService,
+                threadPool
+            );
+
+            final AdmissionControlService admissionControlService = new AdmissionControlService(
+                settings,
+                clusterService,
+                threadPool,
+                resourceUsageCollectorService
+            );
+
+            AdmissionControlTransportInterceptor admissionControlTransportInterceptor = new AdmissionControlTransportInterceptor(
+                admissionControlService
+            );
+
             final AliasValidator aliasValidator = new AliasValidator();
 
             final ShardLimitValidator shardLimitValidator = new ShardLimitValidator(settings, clusterService, systemIndices);
@@ -893,16 +915,6 @@ public class Node implements Closeable {
             modules.add(actionModule);
 
             final RestController restController = actionModule.getRestController();
-
-            final AdmissionControlService admissionControlService = new AdmissionControlService(
-                settings,
-                clusterService.getClusterSettings(),
-                threadPool
-            );
-
-            AdmissionControlTransportInterceptor admissionControlTransportInterceptor = new AdmissionControlTransportInterceptor(
-                admissionControlService
-            );
 
             final NetworkModule networkModule = new NetworkModule(
                 settings,
@@ -1099,16 +1111,7 @@ public class Node implements Closeable {
                 transportService.getTaskManager(),
                 taskCancellationMonitoringSettings
             );
-            final NodeResourceUsageTracker nodeResourceUsageTracker = new NodeResourceUsageTracker(
-                threadPool,
-                settings,
-                clusterService.getClusterSettings()
-            );
-            final ResourceUsageCollectorService resourceUsageCollectorService = new ResourceUsageCollectorService(
-                nodeResourceUsageTracker,
-                clusterService,
-                threadPool
-            );
+
             this.nodeService = new NodeService(
                 settings,
                 threadPool,
@@ -1131,7 +1134,8 @@ public class Node implements Closeable {
                 searchPipelineService,
                 fileCache,
                 taskCancellationMonitoringService,
-                resourceUsageCollectorService
+                resourceUsageCollectorService,
+                admissionControlService
             );
 
             final SearchService searchService = newSearchService(
