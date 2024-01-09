@@ -917,6 +917,7 @@ public class Node implements Closeable {
             final RestController restController = actionModule.getRestController();
 
             final NodeResourceUsageTracker nodeResourceUsageTracker = new NodeResourceUsageTracker(
+                monitorService.fsService(),
                 threadPool,
                 settings,
                 clusterService.getClusterSettings()
