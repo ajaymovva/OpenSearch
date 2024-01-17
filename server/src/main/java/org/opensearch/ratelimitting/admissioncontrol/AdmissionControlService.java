@@ -15,6 +15,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.node.ResourceUsageCollectorService;
 import org.opensearch.ratelimitting.admissioncontrol.controllers.AdmissionController;
 import org.opensearch.ratelimitting.admissioncontrol.controllers.CpuBasedAdmissionController;
+import org.opensearch.ratelimitting.admissioncontrol.controllers.IoBasedAdmissionController;
 import org.opensearch.ratelimitting.admissioncontrol.enums.AdmissionControlActionType;
 import org.opensearch.ratelimitting.admissioncontrol.stats.AdmissionControlStats;
 import org.opensearch.ratelimitting.admissioncontrol.stats.AdmissionControllerStats;
@@ -26,6 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import static org.opensearch.ratelimitting.admissioncontrol.controllers.CpuBasedAdmissionController.CPU_BASED_ADMISSION_CONTROLLER;
+import static org.opensearch.ratelimitting.admissioncontrol.controllers.IoBasedAdmissionController.IO_BASED_ADMISSION_CONTROLLER;
 
 /**
  * Admission control Service that bootstraps and manages all the Admission Controllers in OpenSearch.
@@ -67,6 +69,7 @@ public class AdmissionControlService {
     private void initialise() {
         // Initialise different type of admission controllers
         registerAdmissionController(CPU_BASED_ADMISSION_CONTROLLER);
+        registerAdmissionController(IO_BASED_ADMISSION_CONTROLLER);
     }
 
     /**
@@ -100,6 +103,13 @@ public class AdmissionControlService {
                     this.resourceUsageCollectorService,
                     this.clusterService,
                     this.settings
+                );
+            case IO_BASED_ADMISSION_CONTROLLER:
+                return new IoBasedAdmissionController(
+                  admissionControllerName,
+                  this.resourceUsageCollectorService,
+                  this.clusterService,
+                  this.settings
                 );
             default:
                 throw new IllegalArgumentException("Not Supported AdmissionController : " + admissionControllerName);

@@ -26,6 +26,7 @@ import org.opensearch.ratelimitting.admissioncontrol.enums.AdmissionControlMode;
 import org.opensearch.ratelimitting.admissioncontrol.stats.AdmissionControllerStats;
 import org.opensearch.test.OpenSearchSingleNodeTestCase;
 import org.junit.After;
+import java.util.List;
 
 import static org.opensearch.ratelimitting.admissioncontrol.AdmissionControlSettings.ADMISSION_CONTROL_TRANSPORT_LAYER_MODE;
 import static org.opensearch.ratelimitting.admissioncontrol.settings.CpuBasedAdmissionControllerSettings.INDEXING_CPU_USAGE_LIMIT;
@@ -83,8 +84,12 @@ public class AdmissionControlSingleNodeTests extends OpenSearchSingleNodeTestCas
         BulkResponse res = client().bulk(bulk.request()).actionGet();
         assertEquals(429, res.getItems()[0].getFailure().getStatus().getStatus());
         AdmissionControlService admissionControlService = getInstanceFromNode(AdmissionControlService.class);
-        AdmissionControllerStats acStats = admissionControlService.stats().getAdmissionControllerStatsList().get(0);
-        assertEquals(1, (long) acStats.getRejectionCount().get(AdmissionControlActionType.INDEXING.getType()));
+        List<AdmissionControllerStats> acStats =  admissionControlService.stats().getAdmissionControllerStatsList();
+        long rejectionCount = 0;
+        for (AdmissionControllerStats stat : acStats) {
+            rejectionCount += stat.getRejectionCount().getOrDefault(AdmissionControlActionType.INDEXING.getType(), 0L);
+        }
+        assertEquals(1, rejectionCount);
         client().admin().indices().prepareRefresh("index").get();
 
         // verify search request hits 429
@@ -94,8 +99,12 @@ public class AdmissionControlSingleNodeTests extends OpenSearchSingleNodeTestCas
         } catch (Exception e) {
             assertTrue(((SearchPhaseExecutionException) e).getDetailedMessage().contains("OpenSearchRejectedExecutionException"));
         }
-        acStats = admissionControlService.stats().getAdmissionControllerStatsList().get(0);
-        assertEquals(1, (long) acStats.getRejectionCount().get(AdmissionControlActionType.SEARCH.getType()));
+        acStats =  admissionControlService.stats().getAdmissionControllerStatsList();
+        rejectionCount = 0;
+        for (AdmissionControllerStats acStat : acStats) {
+            rejectionCount += acStat.getRejectionCount().getOrDefault(AdmissionControlActionType.SEARCH.getType(), 0L);
+        }
+        assertEquals(1, rejectionCount);
     }
 
     public void testAdmissionControlRejectionMonitorOnlyMode() throws Exception {
@@ -120,16 +129,24 @@ public class AdmissionControlSingleNodeTests extends OpenSearchSingleNodeTestCas
         BulkResponse res = client().bulk(bulk.request()).actionGet();
         assertFalse(res.hasFailures());
         AdmissionControlService admissionControlService = getInstanceFromNode(AdmissionControlService.class);
-        AdmissionControllerStats acStats = admissionControlService.stats().getAdmissionControllerStatsList().get(0);
-        assertEquals(1, (long) acStats.getRejectionCount().get(AdmissionControlActionType.INDEXING.getType()));
+        List<AdmissionControllerStats> acStats =  admissionControlService.stats().getAdmissionControllerStatsList();
+        long rejectionCount = 0;
+        for (AdmissionControllerStats stat : acStats) {
+            rejectionCount += stat.getRejectionCount().getOrDefault(AdmissionControlActionType.INDEXING.getType(), 0L);
+        }
+        assertEquals(1, rejectionCount);
         client().admin().indices().prepareRefresh("index").get();
 
         // verify search request success but admission control having rejections stats
         SearchRequest searchRequest = new SearchRequest("index");
         SearchResponse searchResponse = client().search(searchRequest).actionGet();
         assertEquals(3, searchResponse.getHits().getHits().length);
-        acStats = admissionControlService.stats().getAdmissionControllerStatsList().get(0);
-        assertEquals(1, (long) acStats.getRejectionCount().get(AdmissionControlActionType.SEARCH.getType()));
+        acStats =  admissionControlService.stats().getAdmissionControllerStatsList();
+        rejectionCount = 0;
+        for (AdmissionControllerStats acStat : acStats) {
+            rejectionCount += acStat.getRejectionCount().getOrDefault(AdmissionControlActionType.SEARCH.getType(), 0L);
+        }
+        assertEquals(1, rejectionCount);
     }
 
     public void testAdmissionControlRejectionDisabledMode() throws Exception {
