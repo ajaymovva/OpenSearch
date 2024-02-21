@@ -23,9 +23,11 @@ import java.util.Locale;
 public class IoUsageStats implements Writeable, ToXContentFragment {
 
     private double ioUtilisationPercent;
+    private double ewmaioUtilisationPercent;
 
     public IoUsageStats(double ioUtilisationPercent) {
         this.ioUtilisationPercent = ioUtilisationPercent;
+        this.ewmaioUtilisationPercent = ioUtilisationPercent;
     }
 
     /**
@@ -35,6 +37,7 @@ public class IoUsageStats implements Writeable, ToXContentFragment {
      */
     public IoUsageStats(StreamInput in) throws IOException {
         this.ioUtilisationPercent = in.readDouble();
+        this.ewmaioUtilisationPercent = in.readDouble();
     }
 
     /**
@@ -45,14 +48,23 @@ public class IoUsageStats implements Writeable, ToXContentFragment {
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeDouble(this.ioUtilisationPercent);
+        out.writeDouble(this.ewmaioUtilisationPercent);
     }
 
     public double getIoUtilisationPercent() {
         return ioUtilisationPercent;
     }
 
+    public double getEWMAioUtilisationPercent() {
+        return  ewmaioUtilisationPercent;
+    }
+
     public void setIoUtilisationPercent(double ioUtilisationPercent) {
         this.ioUtilisationPercent = ioUtilisationPercent;
+    }
+
+    public void setEWMAioUtilisationPercent(double ewmaioUtilisationPercent) {
+        this.ewmaioUtilisationPercent = ewmaioUtilisationPercent;
     }
 
     @Override
