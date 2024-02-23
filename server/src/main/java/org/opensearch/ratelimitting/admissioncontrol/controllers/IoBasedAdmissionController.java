@@ -12,19 +12,27 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.util.TokenBucket;
 import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
 import org.opensearch.node.NodeResourceUsageStats;
 import org.opensearch.node.ResourceUsageCollectorService;
+import org.opensearch.ratelimitting.admissioncontrol.RejectionSettingsListener;
 import org.opensearch.ratelimitting.admissioncontrol.enums.AdmissionControlActionType;
 import org.opensearch.ratelimitting.admissioncontrol.settings.IoBasedAdmissionControllerSettings;
 
 import java.util.Locale;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
-public class IoBasedAdmissionController extends AdmissionController {
+public class IoBasedAdmissionController extends AdmissionController implements RejectionSettingsListener {
     public static final String IO_BASED_ADMISSION_CONTROLLER = "global_io_usage";
     private static final Logger LOGGER = LogManager.getLogger(IoBasedAdmissionController.class);
     public IoBasedAdmissionControllerSettings settings;
+    private final AtomicReference<TokenBucket> ratioLimiter;
+    private final AtomicLong completionCount;
+    private long lastUpdatedTimeStampOnRejection;
+    private double lastUpdateIOUsageOnRejection;
 
     /**
      * @param admissionControllerName       name of the admissionController
@@ -39,6 +47,11 @@ public class IoBasedAdmissionController extends AdmissionController {
     ) {
         super(admissionControllerName, resourceUsageCollectorService, clusterService);
         this.settings = new IoBasedAdmissionControllerSettings(clusterService.getClusterSettings(), settings);
+        this.completionCount = new AtomicLong();
+        this.ratioLimiter = new AtomicReference<>(new TokenBucket(this::getCompletionCount, this.settings.getRejectionRatio(), this.settings.getRejectionBurst()));
+        this.lastUpdatedTimeStampOnRejection = -1;
+        this.lastUpdateIOUsageOnRejection = -1;
+        this.settings.addListener(this);
     }
 
     /**
@@ -58,7 +71,7 @@ public class IoBasedAdmissionController extends AdmissionController {
      * Apply transport layer admission control if configured limit has been reached
      */
     private void applyForTransportLayer(String actionName, AdmissionControlActionType admissionControlActionType) {
-        if (isLimitsBreached(actionName, admissionControlActionType)) {
+        if (isEligibleForRejection(actionName, admissionControlActionType)) {
             this.addRejectionCount(admissionControlActionType.getType(), 1);
             if (this.isAdmissionControllerEnforced(this.settings.getTransportLayerAdmissionControllerMode())) {
                 throw new OpenSearchRejectedExecutionException(
@@ -70,30 +83,49 @@ public class IoBasedAdmissionController extends AdmissionController {
                 );
             }
         }
+        this.completionCount.incrementAndGet();
     }
 
     /**
      * Check if the configured resource usage limits are breached for the action
      */
-    private boolean isLimitsBreached(String actionName, AdmissionControlActionType admissionControlActionType) {
+    private boolean isEligibleForRejection(String actionName, AdmissionControlActionType admissionControlActionType) {
         // check if cluster state is ready
         if (clusterService.state() != null && clusterService.state().nodes() != null) {
-            long maxIoLimit = this.getIoRejectionThreshold(admissionControlActionType);
             Optional<NodeResourceUsageStats> nodePerformanceStatistics = this.resourceUsageCollectorService.getNodeStatistics(
                 this.clusterService.state().nodes().getLocalNodeId()
             );
             if (nodePerformanceStatistics.isPresent()) {
                 double ioUsage = nodePerformanceStatistics.get().getIoUsageStats().getIoUtilisationPercent();
-                if (ioUsage >= maxIoLimit) {
+                if(ioUsage > this.settings.getMaxIoUsageLimit()) {
                     LOGGER.warn(
                         "IoBasedAdmissionController limit reached as the current IO "
-                            + "usage [{}] exceeds the allowed limit [{}] for transport action [{}] in admissionControlMode [{}]",
+                            + "usage [{}] exceeds the max allowed limit [{}] in admissionControlMode [{}]",
                         ioUsage,
-                        maxIoLimit,
-                        actionName,
+                        this.settings.getMaxIoUsageLimit(),
                         this.settings.getTransportLayerAdmissionControllerMode()
                     );
                     return true;
+                }
+                long maxIoLimitForAction = this.getIoRejectionThreshold(admissionControlActionType);
+                if (ioUsage >= maxIoLimitForAction) {
+                    boolean ratioLimitNotReached = this.ratioLimiter.get().request();
+                    this.tuneRejectionMetrics(ioUsage);
+                    if (ratioLimitNotReached) {
+                        LOGGER.warn(
+                            "IoBasedAdmissionController limit reached as the current IO "
+                                + "usage [{}] exceeds the allowed limit [{}] for transport action [{}] in admissionControlMode [{}]",
+                            ioUsage,
+                            maxIoLimitForAction,
+                            actionName,
+                            this.settings.getTransportLayerAdmissionControllerMode()
+                        );
+                        return true;
+                    }
+                } else {
+                    if (this.settings.getActualRejectionRatio() != this.settings.getRejectionRatio()){
+                        this.settings.setRejectionRatio(this.settings.getActualRejectionRatio());
+                    }
                 }
             }
         }
@@ -117,6 +149,33 @@ public class IoBasedAdmissionController extends AdmissionController {
                         admissionControlActionType.getType()
                     )
                 );
+        }
+    }
+
+    public long getCompletionCount() {
+        return completionCount.get();
+    }
+
+    @Override
+    public void onSettingsChanged() {
+        this.ratioLimiter.set(new TokenBucket(this::getCompletionCount, this.settings.getRejectionRatio(), this.settings.getRejectionBurst()));
+    }
+
+    private void tuneRejectionMetrics(double ioUsage) {
+        if(this.lastUpdatedTimeStampOnRejection > 0) {
+            long diffTime = (System.currentTimeMillis() - this.lastUpdatedTimeStampOnRejection) / 1000;
+            if (diffTime >= 15) {
+                if(ioUsage >= this.lastUpdateIOUsageOnRejection) {
+                    this.settings.setRejectionRatio(this.settings.getRejectionRatio() * this.settings.getRejectionRatioRate());
+                } else {
+                    this.settings.setRejectionRatio(this.settings.getRejectionRatio() / this.settings.getRejectionRatioRate());
+                }
+                this.lastUpdatedTimeStampOnRejection = System.currentTimeMillis();
+                this.lastUpdateIOUsageOnRejection = ioUsage;
+            }
+        } else {
+            this.lastUpdatedTimeStampOnRejection = System.currentTimeMillis();
+            this.lastUpdateIOUsageOnRejection = ioUsage;
         }
     }
 }

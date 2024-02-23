@@ -714,6 +714,10 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 IoBasedAdmissionControllerSettings.SEARCH_IO_USAGE_LIMIT,
                 IoBasedAdmissionControllerSettings.INDEXING_IO_USAGE_LIMIT,
                 IoBasedAdmissionControllerSettings.IO_BASED_ADMISSION_CONTROLLER_TRANSPORT_LAYER_MODE,
+                IoBasedAdmissionControllerSettings.SETTING_REJECTION_BURST,
+                IoBasedAdmissionControllerSettings.SETTING_REJECTION_RATIO,
+                IoBasedAdmissionControllerSettings.MAX_IO_USAGE_LIMIT,
+                IoBasedAdmissionControllerSettings.SETTING_REJECTION_RATIO_RATE,
                 IndicesService.CLUSTER_INDEX_RESTRICT_REPLICATION_TYPE_SETTING
             )
         )
