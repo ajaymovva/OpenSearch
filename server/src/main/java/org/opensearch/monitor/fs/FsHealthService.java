@@ -84,6 +84,7 @@ public class FsHealthService extends AbstractLifecycleComponent implements NodeH
     private volatile TimeValue healthyTimeoutThreshold;
     private final AtomicLong lastRunStartTimeMillis = new AtomicLong(Long.MIN_VALUE);
     private final AtomicBoolean checkInProgress = new AtomicBoolean();
+    private long noOfFailureRetries;
 
     @Nullable
     private volatile Set<Path> unhealthyPaths;
@@ -109,8 +110,16 @@ public class FsHealthService extends AbstractLifecycleComponent implements NodeH
     );
     public static final Setting<TimeValue> HEALTHY_TIMEOUT_SETTING = Setting.timeSetting(
         "monitor.fs.health.healthy_timeout_threshold",
-        TimeValue.timeValueSeconds(60),
+        TimeValue.timeValueSeconds(30),
         TimeValue.timeValueMillis(1),
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    public static final Setting<Long> NO_OF_RETRIES_FAILURE = Setting.longSetting(
+        "monitor.fs.health.no_of_retries_failure",
+        2,
+        1,
         Setting.Property.NodeScope,
         Setting.Property.Dynamic
     );
@@ -123,9 +132,11 @@ public class FsHealthService extends AbstractLifecycleComponent implements NodeH
         this.currentTimeMillisSupplier = threadPool::relativeTimeInMillis;
         this.healthyTimeoutThreshold = HEALTHY_TIMEOUT_SETTING.get(settings);
         this.nodeEnv = nodeEnv;
+        this.noOfFailureRetries = NO_OF_RETRIES_FAILURE.get(settings);
         clusterSettings.addSettingsUpdateConsumer(SLOW_PATH_LOGGING_THRESHOLD_SETTING, this::setSlowPathLoggingThreshold);
         clusterSettings.addSettingsUpdateConsumer(HEALTHY_TIMEOUT_SETTING, this::setHealthyTimeoutThreshold);
         clusterSettings.addSettingsUpdateConsumer(ENABLED_SETTING, this::setEnabled);
+        clusterSettings.addSettingsUpdateConsumer(NO_OF_RETRIES_FAILURE, this::setNoOfFailureRetries);
     }
 
     @Override
@@ -153,6 +164,14 @@ public class FsHealthService extends AbstractLifecycleComponent implements NodeH
         this.healthyTimeoutThreshold = healthyTimeoutThreshold;
     }
 
+    public void setNoOfFailureRetries(long noOfFailureRetries) {
+        this.noOfFailureRetries = noOfFailureRetries;
+    }
+
+    public long getNoOfFailureRetries() {
+        return noOfFailureRetries;
+    }
+
     @Override
     public StatusInfo getHealth() {
         StatusInfo statusInfo;
@@ -162,13 +181,13 @@ public class FsHealthService extends AbstractLifecycleComponent implements NodeH
         } else if (brokenLock) {
             statusInfo = new StatusInfo(UNHEALTHY, "health check failed due to broken node lock");
         } else if (checkInProgress.get()
-            && currentTimeMillisSupplier.getAsLong() - lastRunStartTimeMillis.get() > healthyTimeoutThreshold.millis()) {
+            && currentTimeMillisSupplier.getAsLong() - lastRunStartTimeMillis.get() > (healthyTimeoutThreshold.millis() * this.getNoOfFailureRetries())) {
                 statusInfo = new StatusInfo(UNHEALTHY, "healthy threshold breached");
-            } else if (unhealthyPaths == null) {
+            } else if (unhealthyPaths == null || unhealthyPaths.isEmpty()) {
                 statusInfo = new StatusInfo(HEALTHY, "health check passed");
             } else {
                 String info = "health check failed on ["
-                    + unhealthyPaths.stream().map(k -> k.toString()).collect(Collectors.joining(","))
+                    + unhealthyPaths.stream().map(Path::toString).collect(Collectors.joining(","))
                     + "]";
                 statusInfo = new StatusInfo(UNHEALTHY, info);
             }
@@ -206,7 +225,6 @@ public class FsHealthService extends AbstractLifecycleComponent implements NodeH
         }
 
         private void monitorFSHealth() {
-            Set<Path> currentUnhealthyPaths = null;
             Path[] paths = null;
             try {
                 paths = nodeEnv.nodeDataPaths();
@@ -215,46 +233,47 @@ public class FsHealthService extends AbstractLifecycleComponent implements NodeH
                 brokenLock = true;
                 return;
             }
-
+            Set<Path> currentUnhealthyPaths = new HashSet<>();
+            long noOfRetries = getNoOfFailureRetries();
             for (Path path : paths) {
-                long executionStartTime = currentTimeMillisSupplier.getAsLong();
-                try {
-                    if (Files.exists(path)) {
-                        Path tempDataPath = path.resolve(TEMP_FILE_NAME);
-                        Files.deleteIfExists(tempDataPath);
-                        try (OutputStream os = Files.newOutputStream(tempDataPath, StandardOpenOption.CREATE_NEW)) {
-                            os.write(byteToWrite);
-                            IOUtils.fsync(tempDataPath, false);
-                        }
-                        Files.delete(tempDataPath);
-                        final long elapsedTime = currentTimeMillisSupplier.getAsLong() - executionStartTime;
-                        if (elapsedTime > slowPathLoggingThreshold.millis()) {
-                            logger.warn(
-                                "health check of [{}] took [{}ms] which is above the warn threshold of [{}]",
-                                path,
-                                elapsedTime,
-                                slowPathLoggingThreshold
-                            );
-                        }
-                        if (elapsedTime > healthyTimeoutThreshold.millis()) {
-                            logger.error(
-                                "health check of [{}] failed, took [{}ms] which is above the healthy threshold of [{}]",
-                                path,
-                                elapsedTime,
-                                healthyTimeoutThreshold
-                            );
-                            if (currentUnhealthyPaths == null) {
-                                currentUnhealthyPaths = new HashSet<>(1);
+                while(noOfRetries > 0) {
+                    noOfRetries--;
+                    long executionStartTime = currentTimeMillisSupplier.getAsLong();
+                    try {
+                        if (Files.exists(path)) {
+                            Path tempDataPath = path.resolve(TEMP_FILE_NAME);
+                            Files.deleteIfExists(tempDataPath);
+                            try (OutputStream os = Files.newOutputStream(tempDataPath, StandardOpenOption.CREATE_NEW)) {
+                                os.write(byteToWrite);
+                                IOUtils.fsync(tempDataPath, false);
                             }
-                            currentUnhealthyPaths.add(path);
+                            Files.delete(tempDataPath);
+                            final long elapsedTime = currentTimeMillisSupplier.getAsLong() - executionStartTime;
+                            if (elapsedTime > slowPathLoggingThreshold.millis()) {
+                                logger.warn(
+                                    "health check of [{}] took [{}ms] which is above the warn threshold of [{}]",
+                                    path,
+                                    elapsedTime,
+                                    slowPathLoggingThreshold
+                                );
+                                break;
+                            }
+                            if (elapsedTime > healthyTimeoutThreshold.millis()) {
+                                logger.error(
+                                    "health check of [{}] failed, took [{}ms] which is above the healthy threshold of [{}]",
+                                    path,
+                                    elapsedTime,
+                                    healthyTimeoutThreshold
+                                );
+                                currentUnhealthyPaths.add(path);
+                                continue;
+                            }
                         }
+                        break;
+                    } catch (Exception ex) {
+                        logger.error(new ParameterizedMessage("health check of [{}] failed", path), ex);
+                        currentUnhealthyPaths.add(path);
                     }
-                } catch (Exception ex) {
-                    logger.error(new ParameterizedMessage("health check of [{}] failed", path), ex);
-                    if (currentUnhealthyPaths == null) {
-                        currentUnhealthyPaths = new HashSet<>(1);
-                    }
-                    currentUnhealthyPaths.add(path);
                 }
             }
             unhealthyPaths = currentUnhealthyPaths;
