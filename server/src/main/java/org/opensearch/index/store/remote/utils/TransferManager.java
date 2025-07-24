@@ -28,6 +28,7 @@ import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -107,17 +108,17 @@ public class TransferManager {
         }
     }
 
-    public CompletableFuture<IndexInput> fetchBlobAsync(BlobFetchRequest blobFetchRequest) throws IOException {
+    public CompletableFuture<IndexInput> fetchBlobAsync(BlobFetchRequest blobFetchRequest, Executor executor) throws IOException {
         final Path key = blobFetchRequest.getFilePath();
-        logger.trace("Async fetchBlob called for {}", key.toString());
+        logger.info("Async fetchBlob called for {}", key.toString());
         try {
             CachedIndexInput cacheEntry = fileCache.compute(key, (path, cachedIndexInput) -> {
                     if (cachedIndexInput == null || cachedIndexInput.isClosed()) {
-                        logger.trace("Transfer Manager - IndexInput closed or not in cache");
+                        logger.info("Transfer Manager - IndexInput closed or not in cache");
                         // Doesn't exist or is closed, either way create a new one
                         return new DelayedCreationCachedIndexInput(fileCache, streamReader, blobFetchRequest);
                     } else {
-                        logger.trace("Transfer Manager - Required blob Already in cache");
+                        logger.info("Transfer Manager - Required blob Already in cache: {}", blobFetchRequest.toString());
                         // already in the cache and ready to be used (open)
                         return cachedIndexInput;
                     }
@@ -126,7 +127,7 @@ public class TransferManager {
                 // way the reference count has been incremented by one. We can only
                 // decrement this reference _after_ creating the clone to be returned.
                 try {
-                    return cacheEntry.asyncLoadIndexInput();
+                    return cacheEntry.asyncLoadIndexInput(executor);
                 } finally {
                     fileCache.decRef(key);
                 }
@@ -205,6 +206,7 @@ public class TransferManager {
             if (isStarted.getAndSet(true) == false) {
                 // We're the first one here, need to download the block
                 try {
+                    logger.info("Triggering load Index Input Synchronously: {}", request.toString());
                     result.complete(createIndexInput(fileCache, streamReader, request));
                 } catch (Exception e) {
                     result.completeExceptionally(e);
@@ -223,23 +225,28 @@ public class TransferManager {
             }
         }
 
-        public CompletableFuture<IndexInput> asyncLoadIndexInput() {
+        public CompletableFuture<IndexInput> asyncLoadIndexInput(Executor executor) {
             if (isClosed.get()) {
-                throw new IllegalStateException("Already closed");
+                return CompletableFuture.failedFuture(new IllegalStateException("Already closed"));
             }
             if (isStarted.getAndSet(true) == false) {
+                // Create new future and set it as the result
                 CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return createIndexInput(fileCache, streamReader, request);
-                        } catch (Exception e) {
-                            fileCache.remove(request.getFilePath());
-                            throw new CompletionException(e);
-                        }
-                    }).thenAccept(result::complete)
-                    .exceptionally(throwable -> {
+                    try {
+                        logger.info("Triggering async load Index Input: {}", request.toString());
+                        return createIndexInput(fileCache, streamReader, request);
+                    } catch (Exception e) {
+                        fileCache.remove(request.getFilePath());
+                        throw new CompletionException(e);
+                    }
+                }, executor).handle((indexInput, throwable) -> {
+                    if (throwable != null) {
                         result.completeExceptionally(throwable);
-                        return null;
-                    });
+                    } else {
+                        result.complete(indexInput);
+                    }
+                    return null;
+                });
             }
             return result;
         }

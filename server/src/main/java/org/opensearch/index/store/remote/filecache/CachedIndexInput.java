@@ -13,6 +13,7 @@ import org.opensearch.common.annotation.PublicApi;
 
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * Interface for an entry in the {@link FileCache} that can return an
@@ -34,7 +35,7 @@ public interface CachedIndexInput extends AutoCloseable {
      *  Trigger and get the completable future of index input
      *  @return CompletableFuture of IndexInput
      */
-    default CompletableFuture<IndexInput> asyncLoadIndexInput() {
+    default CompletableFuture<IndexInput> asyncLoadIndexInput(Executor executor) {
         return null;
     }
 

@@ -2264,11 +2264,12 @@ public class Node implements Closeable {
         NodeEnvironment.NodePath fileCacheNodePath = nodeEnvironment.fileCacheNodePath();
         long totalSpace = ExceptionsHelper.catchAsRuntimeException(() -> FsProbe.getTotalSize(fileCacheNodePath));
         long capacity = calculateFileCacheSize(capacityRaw, totalSpace);
+        logger.info("File Cache capacity:{} fileCacheNodePath: {}", capacity, fileCacheNodePath);
         if (capacity <= 0 || totalSpace <= capacity) {
             throw new SettingsException("Cache size must be larger than zero and less than total capacity");
         }
-
-        this.fileCache = FileCacheFactory.createConcurrentLRUFileCache(capacity, circuitBreaker);
+        logger.info("Adding capacity as 750 KB");
+        this.fileCache = FileCacheFactory.createConcurrentLRUFileCache(7500000, circuitBreaker);
         fileCacheNodePath.fileCacheReservedSize = new ByteSizeValue(this.fileCache.capacity(), ByteSizeUnit.BYTES);
         ForkJoinPool loadFileCacheThreadpool = new ForkJoinPool(
             Runtime.getRuntime().availableProcessors(),
